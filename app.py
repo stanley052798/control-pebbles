@@ -300,3 +300,284 @@ elif opcion == "Dashboard General":
 
     st.subheader("Detalle Mecánico")
     st.dataframe(df_mec[['Partida', 'Total', 'Ejecutado', '% Avance', 'Unidad']], use_container_width=True)
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import os
+import datetime
+
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Control Pebbles Histórico", layout="wide", page_icon="📅")
+
+FILE_CATALOGO = 'pebbles_catalogo.csv'   # Guarda las Metas, Unidades, Fotos
+FILE_HISTORIAL = 'pebbles_historial.csv' # Guarda CADA avance reportado con fecha
+
+# --- LÓGICA DE OBRAS CIVILES (Predecesoras) ---
+JERARQUIA_CIVIL = {
+    'Excavaciones': None,
+    'Solado': 'Excavaciones',
+    'Encofrado': 'Solado',
+    'Vaciado de Concreto': 'Encofrado',
+    'Desencofrado': 'Vaciado de Concreto'
+}
+
+# --- FUNCIONES DE BASE DE DATOS ---
+
+def init_db():
+    # 1. Inicializar Catálogo (Si no existe)
+    if not os.path.exists(FILE_CATALOGO):
+        items_mecanicos = [f'Faja Transportadora {i+1}' for i in range(8)] + \
+                          ['Estructuras Metálicas', 'Chancadora 01', 'Chancadora 02', 'Zaranda']
+        items_civiles = list(JERARQUIA_CIVIL.keys())
+        
+        data = []
+        for it in items_mecanicos:
+            data.append({'Disciplina': 'Mecánica', 'Partida': it, 'Unidad': 'Ton', 'Meta': 100.0, 'Img': ''})
+        for it in items_civiles:
+            uni = 'm³' if it in ['Excavaciones','Vaciado de Concreto'] else 'Und'
+            data.append({'Disciplina': 'Civil', 'Partida': it, 'Unidad': uni, 'Meta': 100.0, 'Img': ''})
+            
+        pd.DataFrame(data).to_csv(FILE_CATALOGO, index=False)
+
+    # 2. Inicializar Historial (Vacío al principio)
+    if not os.path.exists(FILE_HISTORIAL):
+        df_hist = pd.DataFrame(columns=['Fecha', 'Disciplina', 'Partida', 'Cantidad', 'Nota'])
+        df_hist.to_csv(FILE_HISTORIAL, index=False)
+
+def load_data():
+    cat = pd.read_csv(FILE_CATALOGO)
+    hist = pd.read_csv(FILE_HISTORIAL)
+    # Convertir columna fecha a datetime
+    if not hist.empty:
+        hist['Fecha'] = pd.to_datetime(hist['Fecha']).dt.date
+    return cat, hist
+
+def get_acumulados(df_cat, df_hist):
+    # Sumariza el historial para saber cuánto llevamos acumulado por partida
+    if df_hist.empty:
+        df_cat['Ejecutado'] = 0.0
+    else:
+        resumen = df_hist.groupby('Partida')['Cantidad'].sum().reset_index()
+        df_cat = pd.merge(df_cat, resumen, on='Partida', how='left').fillna(0)
+        df_cat.rename(columns={'Cantidad': 'Ejecutado'}, inplace=True)
+    
+    # Calcular %
+    df_cat['% Avance'] = (df_cat['Ejecutado'] / df_cat['Meta']) * 100
+    df_cat['% Avance'] = df_cat['% Avance'].clip(upper=100) # Tope visual 100%
+    return df_cat
+
+# Inicialización
+init_db()
+df_cat_raw, df_hist_raw = load_data()
+df_master = get_acumulados(df_cat_raw.copy(), df_hist_raw.copy()) # Master tiene Metas + Acumulados
+
+# --- INTERFAZ ---
+st.sidebar.title("🏗️ Gestión Temporal")
+menu = st.sidebar.radio("Navegación", ["Panel de Control (Dashboard)", "Reportar Avance Diario", "Configuración Metas"])
+
+# ==============================================================================
+# 1. CONFIGURACIÓN (Metas y Fotos)
+# ==============================================================================
+if menu == "Configuración Metas":
+    st.header("⚙️ Configuración del Expediente Técnico")
+    st.info("Edita aquí las Metas Totales y enlaces a Fotos.")
+    
+    edited_cat = st.data_editor(
+        df_cat_raw,
+        column_config={
+            "Meta": st.column_config.NumberColumn(min_value=0.1, format="%.2f"),
+            "Img": st.column_config.LinkColumn("Foto URL"),
+            "Disciplina": st.column_config.TextColumn(disabled=True),
+            "Partida": st.column_config.TextColumn(disabled=True),
+            "Unidad": st.column_config.TextColumn(disabled=True)
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    if st.button("💾 Guardar Cambios en Catálogo"):
+        edited_cat.to_csv(FILE_CATALOGO, index=False)
+        st.success("Catálogo actualizado.")
+        st.rerun()
+
+# ==============================================================================
+# 2. REPORTAR AVANCE (Inputs con Fecha)
+# ==============================================================================
+elif menu == "Reportar Avance Diario":
+    st.header("📝 Registro de Actividad")
+    
+    col_sel1, col_sel2 = st.columns(2)
+    with col_sel1:
+        disc_sel = st.selectbox("Disciplina", df_master['Disciplina'].unique())
+        # Filtrar partidas de esa disciplina
+        partidas_disp = df_master[df_master['Disciplina'] == disc_sel]['Partida'].unique()
+        partida_sel = st.selectbox("Partida / Elemento", partidas_disp)
+    
+    # Obtener datos actuales del Master
+    row = df_master[df_master['Partida'] == partida_sel].iloc[0]
+    pendiente = row['Meta'] - row['Ejecutado']
+    
+    with col_sel2:
+        # Visualizar foto si existe
+        if pd.notna(row['Img']) and str(row['Img']).startswith('http'):
+            st.image(row['Img'], caption=f"Ref: {partida_sel}", width=200)
+    
+    st.divider()
+    
+    # FORMULARIO DE INGRESO
+    col_inp1, col_inp2, col_inp3 = st.columns(3)
+    
+    with col_inp1:
+        fecha_input = st.date_input("Fecha de Ejecución", datetime.date.today())
+    
+    with col_inp2:
+        qty_input = st.number_input(f"Cantidad Avanzada ({row['Unidad']})", min_value=0.0, step=1.0)
+        
+    with col_inp3:
+        nota_input = st.text_input("Nota / Comentario (Opcional)", placeholder="Ej. Turno noche, Sector B")
+
+    # VALIDACIÓN DE LÓGICA CIVIL (PREDECESORAS)
+    bloqueo_logico = False
+    
+    if disc_sel == "Civil":
+        predecesor = JERARQUIA_CIVIL.get(partida_sel)
+        if predecesor:
+            # Buscar % del predecesor
+            row_pred = df_master[df_master['Partida'] == predecesor].iloc[0]
+            pct_pred = row_pred['% Avance']
+            pct_actual = row['% Avance']
+            
+            # Calculamos cómo quedaría el avance con lo nuevo
+            pct_nuevo = ((row['Ejecutado'] + qty_input) / row['Meta']) * 100
+            
+            st.caption(f"🔗 Requiere: {predecesor} ({pct_pred:.1f}%)")
+            
+            # Regla: No puedes superar significativamente al predecesor
+            if pct_nuevo > (pct_pred + 2): # Damos 2% de tolerancia
+                st.error(f"⛔ ERROR DE SECUENCIA: No puedes avanzar '{partida_sel}' al {pct_nuevo:.1f}% porque '{predecesor}' solo va al {pct_pred:.1f}%.")
+                bloqueo_logico = True
+
+    # BOTÓN DE REGISTRO
+    btn = st.button("✅ Registrar Avance", type="primary", disabled=bloqueo_logico)
+    
+    if btn:
+        if qty_input > 0:
+            # Crear nueva fila para el historial
+            new_row = {
+                'Fecha': fecha_input,
+                'Disciplina': disc_sel,
+                'Partida': partida_sel,
+                'Cantidad': qty_input,
+                'Nota': nota_input
+            }
+            # Guardar append mode
+            df_new_entry = pd.DataFrame([new_row])
+            df_new_entry.to_csv(FILE_HISTORIAL, mode='a', header=not os.path.exists(FILE_HISTORIAL), index=False)
+            
+            st.balloons()
+            st.success(f"Guardado: {qty_input} {row['Unidad']} el día {fecha_input}.")
+        else:
+            st.warning("La cantidad debe ser mayor a 0.")
+            
+    # MOSTRAR ÚLTIMOS REGISTROS DE ESTA PARTIDA
+    st.subheader(f"Últimos movimientos: {partida_sel}")
+    if not df_hist_raw.empty:
+        filtro_hist = df_hist_raw[df_hist_raw['Partida'] == partida_sel].sort_values('Fecha', ascending=False).head(5)
+        st.dataframe(filtro_hist, use_container_width=True)
+
+# ==============================================================================
+# 3. DASHBOARD Y REPORTES (El corazón de tu solicitud)
+# ==============================================================================
+elif menu == "Panel de Control (Dashboard)":
+    st.title("📊 Tablero de Control del Proyecto")
+    
+    # 1. KPI GLOBAL
+    # Nota: Como hay unidades mixtas (Ton, m3, Und), sumar todo directo es matemáticamente incorrecto para un "Total Físico".
+    # Usaremos el % Ponderado por partida (asumiendo que cada partida pesa igual, o simplemente promedio de avances)
+    avance_global = df_master['% Avance'].mean()
+    
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Avance Físico Global (Promedio)", f"{avance_global:.1f}%")
+    k2.metric("Registros Totales", f"{len(df_hist_raw)}")
+    # Filtro fecha dinámica
+    k3.date_input("Fecha Hoy", datetime.date.today(), disabled=True)
+    st.progress(avance_global/100)
+    
+    st.divider()
+    
+    # 2. ANÁLISIS TEMPORAL (Día / Semana / Mes)
+    if not df_hist_raw.empty:
+        st.subheader("📈 Productividad en el Tiempo")
+        
+        # Convertir fecha para asegurar agrupación
+        df_hist_chart = df_hist_raw.copy()
+        df_hist_chart['Fecha'] = pd.to_datetime(df_hist_chart['Fecha'])
+        
+        # Selectores de visualización
+        col_t1, col_t2 = st.columns([1, 3])
+        
+        with col_t1:
+            agrupacion = st.selectbox("Agrupar Por:", ["Diario", "Semanal", "Mensual"])
+            disc_filter = st.selectbox("Filtrar Disciplina", ["Todas", "Mecánica", "Civil"])
+        
+        with col_t2:
+            # Filtrado
+            if disc_filter != "Todas":
+                df_hist_chart = df_hist_chart[df_hist_chart['Disciplina'] == disc_filter]
+                
+            # Agrupación temporal
+            if agrupacion == "Diario":
+                grouper = df_hist_chart.groupby([pd.Grouper(key='Fecha', freq='D'), 'Disciplina'])['Cantidad'].sum().reset_index()
+                title_chart = "Producción Diaria"
+            elif agrupacion == "Semanal":
+                grouper = df_hist_chart.groupby([pd.Grouper(key='Fecha', freq='W-MON'), 'Disciplina'])['Cantidad'].sum().reset_index()
+                title_chart = "Producción Semanal (Cierre Lunes)"
+            else: # Mensual
+                grouper = df_hist_chart.groupby([pd.Grouper(key='Fecha', freq='M'), 'Disciplina'])['Cantidad'].sum().reset_index()
+                title_chart = "Producción Mensual"
+            
+            # Gráfico de Barras
+            fig = px.bar(
+                grouper, 
+                x='Fecha', 
+                y='Cantidad', 
+                color='Disciplina', 
+                title=title_chart,
+                text_auto='.1s',
+                barmode='group'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.caption("Nota: Este gráfico suma cantidades mixtas (Ton + m3 + Und) para ver 'esfuerzo'. Para detalle técnico, ver tabla abajo.")
+
+    else:
+        st.info("Aún no hay historial para generar gráficas de tiempo.")
+
+    st.divider()
+
+    # 3. TABLA RESUMEN POR PERIODO (Matriz Cruzada)
+    st.subheader("📋 Resumen Detallado")
+    
+    if not df_hist_raw.empty:
+        # Pivot table para ver Partidas vs Fechas
+        df_hist_raw['FechaStr'] = pd.to_datetime(df_hist_raw['Fecha']).dt.strftime('%Y-%m-%d')
+        pivot = pd.pivot_table(
+            df_hist_raw, 
+            values='Cantidad', 
+            index=['Disciplina', 'Partida'], 
+            columns='FechaStr', 
+            aggfunc='sum', 
+            fill_value=0
+        )
+        # Agregar columna de Total Acumulado
+        pivot['TOTAL ACUMULADO'] = pivot.sum(axis=1)
+        
+        st.dataframe(pivot.style.background_gradient(cmap="Blues", axis=1), use_container_width=True)
+        
+        # Botón descargar Excel
+        st.download_button(
+            label="Descargar Reporte Completo (CSV)",
+            data=pivot.to_csv().encode('utf-8'),
+            file_name='reporte_avance_pebbles.csv',
+            mime='text/csv',
+        )
