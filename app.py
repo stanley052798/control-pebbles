@@ -1,156 +1,302 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 
 # Configuración de la página
-st.set_page_config(page_title="Control Pebbles", layout="wide", page_icon="🏗️")
+st.set_page_config(page_title="Control Pebbles v3", layout="wide", page_icon="🏗️")
 
-# Nombre del archivo de base de datos
-DB_FILE = 'avance_pebbles.csv'
+DB_FILE = 'avance_pebbles_v3.csv'
+
+# --- DEFINICIÓN DE JERARQUÍA Y UNIDADES ---
+# Diccionario de predecesoras: 'Actividad': 'Su_Predecesora'
+JERARQUIA_CIVIL = {
+    'Excavaciones': None,            # Es la primera
+    'Solado': 'Excavaciones',
+    'Encofrado': 'Solado',
+    'Vaciado de Concreto': 'Encofrado',
+    'Desencofrado': 'Vaciado de Concreto'
+}
+
+UNIDADES_CIVIL = {
+    'Excavaciones': 'm³',
+    'Solado': 'Und',
+    'Encofrado': 'Und',
+    'Vaciado de Concreto': 'm³',
+    'Desencofrado': 'Und'
+}
 
 # --- FUNCIÓN DE CARGA DE DATOS ---
 def load_data():
+    # Estructura Mecánica (Igual que antes)
+    items_mecanicos = [f'Faja Transportadora {i+1}' for i in range(8)] + \
+                        ['Estructuras Metálicas', 'Chancadora Pebbles 01', 'Chancadora Pebbles 02', 'Zaranda Vibratoria']
+    
+    # Estructura Civil (Basada en tu jerarquía)
+    items_civiles = list(JERARQUIA_CIVIL.keys())
+
     if os.path.exists(DB_FILE):
-        return pd.read_csv(DB_FILE)
+        df = pd.read_csv(DB_FILE)
+        df = df.fillna('')
+        # Asegurar columna unidad si viene de versión anterior
+        if 'Unidad' not in df.columns:
+            df['Unidad'] = 'Ton' 
+        return df
     else:
-        # Estructura inicial por defecto si no existe el archivo
-        items_mecanicos = [f'Faja Transportadora {i+1}' for i in range(8)] + \
-                          ['Estructuras Metálicas', 'Chancadora Pebbles 01', 'Chancadora Pebbles 02', 'Zaranda Vibratoria']
-        items_civiles = ['Excavaciones', 'Solado', 'Encofrado', 'Vaciado de Concreto', 'Desencofrado']
-        
         data = []
+        # Mecánica
         for item in items_mecanicos:
-            data.append({'Área': 'Mecánica/Estructural', 'Partida': item, 'Total (Ton)': 100.0, 'Ejecutado (Ton)': 0.0})
+            data.append({
+                'Disciplina': 'Mecánica/Estructural', 
+                'Partida': item, 
+                'Unidad': 'Ton',
+                'Total': 100.0, 
+                'Ejecutado': 0.0, 
+                'Imagen URL': ''
+            })
+        # Civil
         for item in items_civiles:
-            data.append({'Área': 'Obras Civiles', 'Partida': item, 'Total (Ton)': 100.0, 'Ejecutado (Ton)': 0.0})
+            data.append({
+                'Disciplina': 'Obras Civiles', 
+                'Partida': item, 
+                'Unidad': UNIDADES_CIVIL[item], # Asignamos la unidad correcta
+                'Total': 100.0, 
+                'Ejecutado': 0.0, 
+                'Imagen URL': ''
+            })
         
         df_new = pd.DataFrame(data)
         df_new.to_csv(DB_FILE, index=False)
         return df_new
 
-# --- FUNCIÓN DE GUARDADO ---
 def save_data(df):
     df.to_csv(DB_FILE, index=False)
 
-# Cargar datos al inicio
-if 'df' not in st.session_state:
-    st.session_state.df = load_data()
+# Cargar estado
+if 'df_v3' not in st.session_state:
+    st.session_state.df_v3 = load_data()
 
-# Recargar variable local para manipulación
-df = st.session_state.df
+df = st.session_state.df_v3.copy()
+
+# Cálculo de avance porcentual
+def get_progress(row):
+    if row['Total'] <= 0: return 0
+    return min((row['Ejecutado'] / row['Total']) * 100, 100.0)
+
+df['% Avance'] = df.apply(get_progress, axis=1)
 
 # --- SIDEBAR ---
-st.sidebar.title("🏗️ Planta Pebbles")
-st.sidebar.markdown("---")
-opcion = st.sidebar.radio("Menú", ["Dashboard", "Reporte Diario", "Config. Metas"])
-
-# --- CÁLCULO DE AVANCE ---
-def calcular_progreso(row):
-    if row['Total (Ton)'] == 0: return 0
-    val = (row['Ejecutado (Ton)'] / row['Total (Ton)']) * 100
-    return min(val, 100.0) # Cap al 100%
-
-df['% Avance'] = df.apply(calcular_progreso, axis=1)
+with st.sidebar:
+    st.title("🏗️ Control Pebbles")
+    st.caption("v3.0 Lógica Constructiva")
+    st.markdown("---")
+    opcion = st.radio("Menú", ["Dashboard General", "Reportar Avance", "Configuración"])
 
 # --- VISTAS ---
 
-# 1. CONFIGURACIÓN (METAS)
-if opcion == "Config. Metas":
-    st.header("⚙️ Configuración de Presupuesto (Metas)")
-    st.warning("Edita los pesos totales (Ton) según el expediente técnico.")
+# 1. CONFIGURACIÓN
+if opcion == "Configuración":
+    st.header("⚙️ Configuración del Expediente")
+    st.info("Define los metrados totales para cada disciplina.")
     
-    edited_df = st.data_editor(
-        df, 
-        column_config={
-            "Total (Ton)": st.column_config.NumberColumn("Meta (Ton)", min_value=0, format="%.2f"),
-            "Ejecutado (Ton)": st.column_config.NumberColumn(disabled=True),
-            "% Avance": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
-        },
-        disabled=["Área", "Partida"],
-        use_container_width=True,
-        hide_index=True
-    )
+    # Separamos en dos tabs para orden
+    tab_mec, tab_civ = st.tabs(["🔩 Mecánica (Ton)", "🧱 Obras Civiles (Mix)"])
     
-    if st.button("💾 Guardar Cambios en Metas"):
-        st.session_state.df = edited_df
-        save_data(edited_df)
-        st.success("¡Metas actualizadas y guardadas!")
+    with tab_mec:
+        df_mec = df[df['Disciplina'] == 'Mecánica/Estructural']
+        edited_mec = st.data_editor(
+            df_mec,
+            column_config={
+                "Total": st.column_config.NumberColumn("Meta (Ton)", min_value=0.1, format="%.2f"),
+                "Unidad": st.column_config.TextColumn(disabled=True),
+                "Ejecutado": st.column_config.NumberColumn(disabled=True),
+                "Imagen URL": st.column_config.LinkColumn("Foto Ref.")
+            },
+            disabled=["Disciplina", "Partida"],
+            hide_index=True,
+            use_container_width=True,
+            key="edit_mec"
+        )
+    
+    with tab_civ:
+        df_civ = df[df['Disciplina'] == 'Obras Civiles']
+        edited_civ = st.data_editor(
+            df_civ,
+            column_config={
+                "Total": st.column_config.NumberColumn("Meta Total", min_value=0.1, format="%.2f"),
+                "Unidad": st.column_config.TextColumn("Unidad", disabled=True), # Unidad fija por lógica
+                "Ejecutado": st.column_config.NumberColumn(disabled=True),
+                "Imagen URL": st.column_config.LinkColumn("Foto Ref.")
+            },
+            disabled=["Disciplina", "Partida", "Unidad"], # Bloqueamos unidad para no romper lógica
+            hide_index=True,
+            use_container_width=True,
+            key="edit_civ"
+        )
+
+    if st.button("💾 Guardar Cambios"):
+        # Combinar los dataframes editados y guardar
+        # Nota: Pandas update logic simplificada
+        df_final = pd.concat([edited_mec, edited_civ])
+        # Aseguramos el orden original si es necesario, pero concat funciona bien aquí
+        st.session_state.df_v3 = df_final
+        save_data(df_final)
+        st.success("Metrados actualizados correctamente.")
         st.rerun()
 
-# 2. REPORTE DIARIO
-elif opcion == "Reporte Diario":
-    st.header("📝 Ingreso de Avance")
+# 2. REPORTAR AVANCE (CON VALIDACIÓN)
+elif opcion == "Reportar Avance":
+    st.header("📝 Registro de Campo")
     
-    col1, col2 = st.columns([1, 2])
+    tipo_trabajo = st.selectbox("Disciplina", ["Obras Civiles", "Mecánica/Estructural"])
     
-    with col1:
-        area_sel = st.selectbox("Área", df['Área'].unique())
-        # Filtramos partidas del área seleccionada
-        items_area = df[df['Área'] == area_sel]['Partida'].tolist()
-        partida_sel = st.selectbox("Partida", items_area)
+    df_filtrado = df[df['Disciplina'] == tipo_trabajo]
+    partida_sel = st.selectbox("Actividad / Elemento", df_filtrado['Partida'].tolist())
     
-    # Datos de la partida seleccionada
-    idx = df[df['Partida'] == partida_sel].index[0]
-    total = df.at[idx, 'Total (Ton)']
-    ejecutado = df.at[idx, 'Ejecutado (Ton)']
-    pendiente = total - ejecutado
+    # Datos actuales
+    idx = df[df['Partida'] == partida_sel].index[0] # Buscar en DF original
+    row = df.loc[idx]
     
-    with col2:
-        st.info(f"**Estado Actual: {partida_sel}**")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Meta", f"{total:,.1f}")
-        c2.metric("Acumulado", f"{ejecutado:,.1f}")
-        c3.metric("Pendiente", f"{pendiente:,.1f}")
+    # --- VISUALIZACIÓN ---
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if row['Imagen URL']:
+            st.image(row['Imagen URL'], use_column_width=True)
+        else:
+            st.info("Sin imagen de referencia")
+            
+    with c2:
+        st.metric(f"Meta ({row['Unidad']})", f"{row['Total']:,.2f}")
+        st.metric(f"Ejecutado ({row['Unidad']})", f"{row['Ejecutado']:,.2f}", delta=f"{row['% Avance']:.1f}%")
+        
+    st.divider()
     
-    st.markdown("### Reportar Producción del Día")
-    avance_input = st.number_input("Toneladas ejecutadas hoy:", min_value=0.0, step=0.5)
+    # --- LÓGICA DE VALIDACIÓN (PREDECESORAS) ---
+    bloqueado = False
+    mensaje_bloqueo = ""
     
-    if st.button("✅ Registrar Avance"):
-        # Actualizar DF
-        st.session_state.df.at[idx, 'Ejecutado (Ton)'] = ejecutado + avance_input
-        # Guardar en CSV
-        save_data(st.session_state.df)
-        st.success(f"Registrado. Nuevo acumulado: {ejecutado + avance_input} Ton")
-        st.rerun()
+    if tipo_trabajo == "Obras Civiles":
+        predecesora = JERARQUIA_CIVIL.get(partida_sel)
+        
+        if predecesora:
+            # Buscar datos de la predecesora
+            row_pred = df[(df['Disciplina']=='Obras Civiles') & (df['Partida']==predecesora)].iloc[0]
+            avance_pred = get_progress(row_pred)
+            avance_actual = row['% Avance']
+            
+            # REGLA: No puedes tener más % de avance en la actual que en la predecesora
+            # (Asumiendo linealidad S-Curve para control simple)
+            st.caption(f"🔗 Dependencia: Esta actividad requiere **{predecesora}** (Avance actual: {avance_pred:.1f}%)")
+            
+            if avance_actual >= avance_pred and avance_pred < 100:
+                # Caso borde: Si ya igualaste el porcentaje, no puedes avanzar más hasta que la otra avance
+                # O un chequeo simple: Si predecesora es 0%, actual no puede moverse.
+                if avance_pred == 0:
+                    bloqueado = True
+                    mensaje_bloqueo = f"⛔ NO INICIADO: La actividad predecesora '{predecesora}' tiene 0% de avance."
+            
+            # Calculamos límite teórico de toneladas/unidades que se pueden reportar hoy
+            # (Opcional: podrías permitir desfases, pero seremos estrictos según tu pedido)
+            max_posible_pct = avance_pred
+            max_posible_qty = (max_posible_pct / 100) * row['Total']
+            
+            # Si quieres ser MUY estricto (Actual no puede superar a Predecesora):
+            qty_restante_logico = max_posible_qty - row['Ejecutado']
+            
+            if qty_restante_logico <= 0 and avance_pred < 100:
+                st.warning(f"⚠️ Alerta de Secuencia: El avance de {partida_sel} ({avance_actual:.1f}%) ya alcanzó al de {predecesora}. Debe avanzar la predecesora primero.")
+
+    # Input de datos
+    pendiente_fisico = row['Total'] - row['Ejecutado']
+    
+    if bloqueado:
+        st.error(mensaje_bloqueo)
+    else:
+        nuevo_avance = st.number_input(
+            f"Ingresar cantidad ejecutada hoy ({row['Unidad']}):", 
+            min_value=0.0, 
+            max_value=float(pendiente_fisico) + 0.1, # Tolerancia pequeña
+            step=1.0
+        )
+        
+        if st.button("Registrar Producción"):
+            # Validación final antes de guardar
+            es_valido = True
+            
+            # Re-verificación de lógica civil al guardar (para evitar bypass)
+            if tipo_trabajo == "Obras Civiles" and predecesora:
+                pct_futuro = ((row['Ejecutado'] + nuevo_avance) / row['Total']) * 100
+                row_pred = df[(df['Disciplina']=='Obras Civiles') & (df['Partida']==predecesora)].iloc[0]
+                pct_pred = get_progress(row_pred)
+                
+                # Tolerancia del 5% para permitir traslapes lógicos en obra
+                if pct_futuro > (pct_pred + 5): 
+                    st.toast(f"🚫 Error Lógico: {partida_sel} no puede superar significativamente a {predecesora}", icon="❌")
+                    es_valido = False
+
+            if es_valido and nuevo_avance > 0:
+                st.session_state.df_v3.at[idx, 'Ejecutado'] += nuevo_avance
+                save_data(st.session_state.df_v3)
+                st.success("✅ Avance registrado correctamente")
+                st.rerun()
 
 # 3. DASHBOARD
-elif opcion == "Dashboard":
+elif opcion == "Dashboard General":
     st.title("📊 Tablero de Control")
     
-    # KPIs
-    tot = df['Total (Ton)'].sum()
-    exe = df['Ejecutado (Ton)'].sum()
-    av_gen = (exe/tot)*100 if tot > 0 else 0
+    # KPIs Separados
+    col1, col2 = st.columns(2)
     
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Peso Total Proyecto", f"{tot:,.0f} Ton")
-    k2.metric("Ejecutado Total", f"{exe:,.0f} Ton", delta=f"{av_gen:.1f}% Avance")
-    k3.progress(av_gen/100)
+    # KPI Mecánico
+    df_mec = df[df['Disciplina'] == 'Mecánica/Estructural']
+    tot_mec = df_mec['Total'].sum()
+    exe_mec = df_mec['Ejecutado'].sum()
+    av_mec = (exe_mec/tot_mec)*100 if tot_mec > 0 else 0
     
+    with col1:
+        st.markdown("### 🔩 Montaje Mecánico")
+        st.metric("Peso Total", f"{tot_mec:,.0f} Ton")
+        st.progress(av_mec/100)
+        st.write(f"**{av_mec:.2f}%** Completado")
+
+    # KPI Civil (Promedio ponderado es difícil con unidades mixtas, usamos % promedio de actividades)
+    df_civ = df[df['Disciplina'] == 'Obras Civiles']
+    # Calculamos avance promedio simple de las 5 actividades para tener una idea global
+    av_civ = df_civ['% Avance'].mean()
+    
+    with col2:
+        st.markdown("### 🧱 Obras Civiles")
+        st.metric("Actividades Críticas", f"{len(df_civ)}")
+        st.progress(av_civ/100)
+        st.write(f"**{av_civ:.2f}%** Promedio Avance Físico")
+
     st.markdown("---")
     
-    c_chart1, c_chart2 = st.columns(2)
+    # Gráficos de Obras Civiles (Diagrama de Flujo visual)
+    st.subheader("Estado del Flujo Civil")
     
-    with c_chart1:
-        st.subheader("Avance por Disciplina")
-        # Agrupar por área
-        df_area = df.groupby('Área')[['Total (Ton)', 'Ejecutado (Ton)']].sum().reset_index()
-        df_area['%'] = (df_area['Ejecutado (Ton)'] / df_area['Total (Ton)'] * 100)
-        
-        fig = px.bar(df_area, x='Área', y=['Ejecutado (Ton)', 'Total (Ton)'], barmode='overlay', title="Comparativo Meta vs Ejecutado")
-        st.plotly_chart(fig, use_container_width=True)
-        
-    with c_chart2:
-        st.subheader("Detalle Crítico")
-        # Filtrar solo lo que tiene avance pero no está terminado
-        df_active = df[(df['Ejecutado (Ton)'] > 0) & (df['Ejecutado (Ton)'] < df['Total (Ton)'])]
-        if not df_active.empty:
-            fig2 = px.funnel(df_active, x='Ejecutado (Ton)', y='Partida', title="Partidas en Ejecución")
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("No hay partidas en proceso intermedio actualmente.")
+    # Creamos un gráfico de barras ordenado por la jerarquía
+    orden_civil = list(JERARQUIA_CIVIL.keys())
+    df_civ_ordenado = df_civ.set_index('Partida').reindex(orden_civil).reset_index()
+    
+    fig_civ = px.bar(
+        df_civ_ordenado, 
+        x='Partida', 
+        y='% Avance',
+        color='% Avance',
+        color_continuous_scale='RdYlGn',
+        range_y=[0, 100],
+        text_auto='.1f',
+        title="Secuencia Constructiva (Validación de Predecesoras)"
+    )
+    # Agregamos flechas o líneas para denotar dependencia visualmente
+    fig_civ.update_traces(marker_line_color='black', marker_line_width=1.5)
+    st.plotly_chart(fig_civ, use_container_width=True)
+    
+    st.markdown("""
+    > **Nota:** El gráfico debe mostrar una escalera descendente (o igualada). 
+    > Si una barra a la derecha es más alta que su vecina izquierda, hay una inconsistencia en el reporte.
+    """)
 
-    with st.expander("Ver Tabla Completa de Datos"):
-        st.dataframe(df.style.background_gradient(subset=['% Avance'], cmap='Greens'))
+    st.subheader("Detalle Mecánico")
+    st.dataframe(df_mec[['Partida', 'Total', 'Ejecutado', '% Avance', 'Unidad']], use_container_width=True)
